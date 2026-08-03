@@ -18,18 +18,26 @@ public class AdminController : ControllerBase
         _context = context;
     }
 
+    // Display name + join date come from Profile/Users.RegistrationDate —
+    // both already exist on the schema (every user gets a Profile row at
+    // registration, see AuthController), they just weren't being selected
+    // here before. Falls back to email only if a Profile row is somehow
+    // missing.
     [HttpGet("users")]
     public async Task<IActionResult> GetUsers()
     {
         var users = await _context.Users
+            .Include(u => u.Profile)
             .OrderByDescending(u => u.UserId)
             .Select(u => new
             {
                 userId = u.UserId,
+                name = u.Profile != null ? u.Profile.ProfileName : u.UserEmail,
                 email = u.UserEmail,
                 userType = u.UserType,
                 isActive = u.IsActive,
-                isVerified = u.IsVerified
+                isVerified = u.IsVerified,
+                joinedDate = u.RegistrationDate
             })
             .ToListAsync();
         return Ok(users);
@@ -39,16 +47,19 @@ public class AdminController : ControllerBase
     public async Task<IActionResult> GetUser(int id)
     {
         var user = await _context.Users
+            .Include(u => u.Profile)
             .Where(u => u.UserId == id)
             .Select(u => new
             {
                 userId = u.UserId,
+                name = u.Profile != null ? u.Profile.ProfileName : u.UserEmail,
                 email = u.UserEmail,
                 contact = u.UserContact,
                 location = u.Location,
                 userType = u.UserType,
                 isActive = u.IsActive,
-                isVerified = u.IsVerified
+                isVerified = u.IsVerified,
+                joinedDate = u.RegistrationDate
             })
             .FirstOrDefaultAsync();
         if (user == null) return NotFound();
@@ -90,7 +101,9 @@ public class AdminController : ControllerBase
                 status = v.Status,
                 submittedDate = v.SubmittedDate,
                 reviewedByUserId = v.ReviewedByUserId,
-                reviewedDate = v.ReviewedDate
+                reviewedDate = v.ReviewedDate,
+                npoCertificate = v.Npocertificate,
+                npoTaxCertificate = v.NpotaxCertificate
             })
             .ToListAsync();
 
@@ -139,10 +152,16 @@ public class AdminController : ControllerBase
         return NoContent();
     }
 
+    // Sender/receiver names come from Profile.ProfileName (same join as
+    // GetUsers above) — Transactions itself only stores user IDs, but the
+    // Profile table it's missing is right there in the schema.
     [HttpGet("transactions")]
     public async Task<IActionResult> GetTransactions([FromQuery] int? userId)
     {
-        var q = _context.Transactions.AsQueryable();
+        var q = _context.Transactions
+            .Include(t => t.SenderUser).ThenInclude(u => u!.Profile)
+            .Include(t => t.ReceiverUser).ThenInclude(u => u!.Profile)
+            .AsQueryable();
         if (userId.HasValue)
             q = q.Where(t => t.SenderUserId == userId.Value || t.ReceiverUserId == userId.Value);
 
@@ -151,7 +170,9 @@ public class AdminController : ControllerBase
             {
                 transactionId = t.TransactionId,
                 senderUserId = t.SenderUserId,
+                senderName = t.SenderUser != null ? (t.SenderUser.Profile != null ? t.SenderUser.Profile.ProfileName : t.SenderUser.UserEmail) : null,
                 receiverUserId = t.ReceiverUserId,
+                receiverName = t.ReceiverUser != null ? (t.ReceiverUser.Profile != null ? t.ReceiverUser.Profile.ProfileName : t.ReceiverUser.UserEmail) : null,
                 amount = t.Amount,
                 transactionType = t.TransactionType,
                 status = t.Status,

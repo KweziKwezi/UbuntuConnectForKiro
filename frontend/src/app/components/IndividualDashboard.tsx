@@ -7,6 +7,8 @@ import {
   volunteerOpportunityApi,
   feedApi,
   walletApi,
+  fundingRequestApi,
+  FundingRequestDto,
   ApiError,
 } from "../../lib/api";
 import { Button } from "./ui/button";
@@ -47,6 +49,9 @@ export default function IndividualDashboard() {
   const [showDonateModal, setShowDonateModal] = useState(false);
   const [showVolunteerModal, setShowVolunteerModal] = useState(false);
   const [selectedNPO, setSelectedNPO] = useState<number | null>(null);
+  // Set when donating from the "Active Campaigns" section so the donation
+  // is attributed to that specific FundingRequest (bumps its RaisedAmount).
+  const [selectedFundingRequest, setSelectedFundingRequest] = useState<number | null>(null);
   const [selectedOpportunity, setSelectedOpportunity] = useState<number | null>(null);
   // Derived from real data: an opportunity counts as "applied" if there's a
   // my-volunteering record matching its NPO + role. (The backend's
@@ -116,40 +121,65 @@ export default function IndividualDashboard() {
 
   // NPOs — real data from GET /api/individual/discover-NPOs.
   // Backend fields available: npoId, organizationName, focusArea, mission,
-  // location, isVerified. Everything else below (followers, image,
-  // hasActiveCampaign/campaignGoal/campaignRaised/campaignDeadline,
-  // createdDate) has NO backend model to back it — there is no NPO
-  // fundraising-campaign entity in this schema, only Business-initiated
-  // partnership campaigns (CampaignController), which is a different
-  // concept. Those fields are defaulted below and the "active campaign"
-  // sections of this dashboard will always render empty until that's
-  // built server-side.
+  // location, isVerified. "followers"/"image" still have no backend model.
+  // "hasActiveCampaign"/campaignGoal/campaignRaised/campaignDeadline/
+  // campaignName ARE backed by a real model now — FundingRequestController
+  // over the pre-existing FundingRequest entity — joined in below via
+  // GET /api/fundingrequests, keyed by npoId. An NPO's "active" campaign is
+  // its most recently created funding request that hasn't passed its
+  // endDate (or has no endDate at all).
   const [allNPOs, setAllNPOs] = useState<any[]>([]);
+  const [fundingRequestsByNpo, setFundingRequestsByNpo] = useState<Record<number, FundingRequestDto>>({});
+
+  useEffect(() => {
+    fundingRequestApi
+      .getAll()
+      .then((list) => {
+        const byNpo: Record<number, FundingRequestDto> = {};
+        for (const fr of list) {
+          const isOpen = !fr.endDate || new Date(fr.endDate) >= new Date();
+          const existing = byNpo[fr.npoId];
+          if (isOpen && (!existing || fr.requestId > existing.requestId)) {
+            byNpo[fr.npoId] = fr;
+          }
+        }
+        setFundingRequestsByNpo(byNpo);
+      })
+      .catch(() => setFundingRequestsByNpo({}));
+  }, []);
 
   useEffect(() => {
     individualApi
       .discoverNpos()
       .then((npos) =>
         setAllNPOs(
-          npos.map((n) => ({
-            id: n.npoId,
-            name: n.organizationName,
-            location: n.location || "Unknown",
-            province: n.location || "Unknown",
-            category: n.focusArea || "General",
-            description: n.mission || "",
-            verified: n.isVerified,
-            followers: 0, // not tracked by the backend
-            impact: "",
-            image:
-              "https://images.unsplash.com/photo-1593113598332-cd288d649433?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=400",
-            hasActiveCampaign: false, // no NPO campaign model exists yet
-            createdDate: new Date().toISOString(),
-          }))
+          npos.map((n) => {
+            const campaign = fundingRequestsByNpo[n.npoId];
+            return {
+              id: n.npoId,
+              name: n.organizationName,
+              location: n.location || "Unknown",
+              province: n.location || "Unknown",
+              category: n.focusArea || "General",
+              description: n.mission || "",
+              verified: n.isVerified,
+              followers: n.followerCount,
+              impact: "",
+              image:
+                "https://images.unsplash.com/photo-1593113598332-cd288d649433?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=400",
+              hasActiveCampaign: !!campaign,
+              campaignId: campaign?.requestId,
+              campaignName: campaign?.title,
+              campaignGoal: campaign?.targetAmount,
+              campaignRaised: campaign?.raisedAmount,
+              campaignDeadline: campaign?.endDate,
+              createdDate: new Date().toISOString(),
+            };
+          })
         )
       )
       .catch(() => setAllNPOs([]));
-  }, []);
+  }, [fundingRequestsByNpo]);
 
   // Volunteer opportunities — real data from GET /api/VolunteerOpportunity.
   // "location", "schedule" and "applicants" (count) aren't backend fields
@@ -222,7 +252,7 @@ export default function IndividualDashboard() {
         setMyDonations(
           (res.donations as any[]).map((d) => ({
             id: d.transactionId,
-            npo: `NPO (user #${d.receiverUserId})`,
+            npo: d.receiverNpoName || `NPO (user #${d.receiverUserId})`,
             amount: d.amount,
             date: d.timestamp,
             project: d.status,
@@ -345,8 +375,9 @@ export default function IndividualDashboard() {
     }
   };
 
-  const handleDonate = (id: number) => {
+  const handleDonate = (id: number, fundingRequestId?: number) => {
     setSelectedNPO(id);
+    setSelectedFundingRequest(fundingRequestId ?? null);
     setShowDonateModal(true);
     loadWalletBalance();
   };
@@ -364,10 +395,11 @@ export default function IndividualDashboard() {
     setActionError(null);
     setIsDonating(true);
     try {
-      const res = await individualApi.donate(selectedNPO, amount);
+      const res = await individualApi.donate(selectedNPO, amount, selectedFundingRequest ?? undefined);
       if (typeof res.newBalance === "number") setWalletBalance(res.newBalance);
       setShowDonateModal(false);
       setSelectedNPO(null);
+      setSelectedFundingRequest(null);
       setDonateAmount("");
       loadPersonalData();
     } catch (err) {
@@ -440,10 +472,12 @@ export default function IndividualDashboard() {
   const nposSupported = impact.npoFollowing; // closest backend equivalent (NPOs followed, not distinct NPOs donated to)
   const totalVolunteerHours = impact.totalHoursVolunteered;
 
-  // Get NPOs with active campaigns
+  // Get NPOs with active campaigns. Campaigns with no deadline are sorted
+  // last (Infinity) rather than treated as urgent (a null endDate would
+  // otherwise produce NaN and break the sort).
   const activeCampaignNPOs = allNPOs.filter(npo => npo.hasActiveCampaign).sort((a, b) => {
-    const daysA = Math.ceil((new Date(a.campaignDeadline!).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
-    const daysB = Math.ceil((new Date(b.campaignDeadline!).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
+    const daysA = a.campaignDeadline ? Math.ceil((new Date(a.campaignDeadline).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) : Infinity;
+    const daysB = b.campaignDeadline ? Math.ceil((new Date(b.campaignDeadline).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) : Infinity;
     return daysA - daysB; // Urgent campaigns first
   });
 
@@ -705,7 +739,7 @@ export default function IndividualDashboard() {
                                 </Button>
                                 <Button
                                   className="flex-1 bg-orange-600 hover:bg-orange-700"
-                                  onClick={() => handleDonate(npo.id)}
+                                  onClick={() => handleDonate(npo.id, npo.campaignId)}
                                 >
                                   Donate Now
                                 </Button>

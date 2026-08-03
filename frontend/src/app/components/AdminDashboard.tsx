@@ -81,19 +81,17 @@ export default function AdminDashboard() {
     loadNPOs();
   }, [user]);
 
-  // NOTE on gaps vs. the original mock UI:
-  // - The Users table has no "name" column in the backend — Users only
-  //   stores email/type/active/verified; the display name lives in the
-  //   Individual/Npo/Business profile tables instead, which this endpoint
-  //   doesn't join. Falls back to email as the display name.
-  // - There's no "joined date" column on Users either.
-  // - Verifications have no NPO name/registration/documents/contact-email —
-  //   the Verification entity only stores npoId + status + dates. NPO name
-  //   is cross-referenced from GET /api/npo below; documents/contact email
-  //   have no backend model at all (no document-upload feature exists yet).
-  // - Transactions only carry sender/receiver *user IDs*, not names.
+  // NOTE on remaining gaps vs. the original mock UI:
+  // - Verifications still have no document-upload model (no NPOCertificate/
+  //   NPOTaxCertificate file storage exists — the Verification entity has
+  //   those column names but nothing writes actual file URLs to them yet).
+  //   Contact email for a pending verification also isn't returned by
+  //   GET /api/npo.
   // - NPO donation totals ("R X raised") and follower counts aren't tracked
   //   anywhere in the backend.
+  // (User display names/joined dates and transaction sender/receiver names
+  // now come from the Profile table via the admin/users and admin/transactions
+  // endpoints — previously unused despite existing on the schema.)
 
   const platformStats = {
     totalUsers: allUsersRaw.length,
@@ -116,33 +114,41 @@ export default function AdminDashboard() {
 
   const pendingVerifications = pendingVerificationsRaw.map((v: any) => {
     const npo = allNPOsRaw.find((n: any) => n.npoId === v.npoId);
+    // Document links now come from VerificationController (npoCertificate/
+    // npoTaxCertificate) — previously always empty because nothing wrote
+    // to those columns; NPOs can now submit them via the "Account
+    // Verification" card in their own dashboard.
+    const documents = [
+      v.npoCertificate ? { label: "NPO Registration Certificate", url: v.npoCertificate } : null,
+      v.npoTaxCertificate ? { label: "Tax Exemption Certificate", url: v.npoTaxCertificate } : null,
+    ].filter(Boolean) as { label: string; url: string }[];
     return {
       id: v.verificationId,
       npoId: v.npoId,
       npoName: npo?.organizationName || `NPO #${v.npoId}`,
       registrationNumber: npo?.nporegNum || "—",
-      location: "—", // GET /api/npo doesn't return location
+      location: npo?.location || "—",
       category: npo?.npofocusArea || "General",
       submittedDate: v.submittedDate,
-      documents: [] as string[], // no document-upload model in the backend
+      documents,
       contactEmail: "—", // not returned by GET /api/npo
     };
   });
 
   const allUsers = allUsersRaw.map((u: any) => ({
     id: u.userId,
-    name: u.email,
+    name: u.name || u.email,
     type: u.userType,
     email: u.email,
-    joined: null as string | null,
+    joined: u.joinedDate || (null as string | null),
     status: u.isActive ? "Active" : "Suspended",
     verified: u.isVerified,
   }));
 
   const recentTransactions = recentTransactionsRaw.map((t: any) => ({
     id: t.transactionId,
-    from: t.senderUserId != null ? `User #${t.senderUserId}` : "—",
-    to: t.receiverUserId != null ? `User #${t.receiverUserId}` : "—",
+    from: t.senderName || (t.senderUserId != null ? `User #${t.senderUserId}` : "—"),
+    to: t.receiverName || (t.receiverUserId != null ? `User #${t.receiverUserId}` : "—"),
     // Withdrawals move money out of the platform — display as negative even
     // though the backend always stores a positive amount.
     amount: t.transactionType === "Withdrawal" ? -t.amount : t.amount,
@@ -153,13 +159,20 @@ export default function AdminDashboard() {
 
   const allNPOs = allNPOsRaw.map((n: any) => {
     const relatedUser = allUsersRaw.find((u: any) => u.userId === n.userId);
+    // Donation total is computed client-side from the already-loaded
+    // admin/transactions feed (GET /api/npo now also returns followerCount,
+    // via the same Follow join used elsewhere) — previously both were
+    // hardcoded to 0.
+    const donationsTotal = recentTransactionsRaw
+      .filter((t: any) => t.receiverUserId === n.userId && t.transactionType === "Donation" && t.status === "Completed")
+      .reduce((sum: number, t: any) => sum + t.amount, 0);
     return {
       id: n.npoId,
       name: n.organizationName,
-      location: "—",
+      location: n.location || "—",
       verified: relatedUser?.isVerified || false,
-      followers: 0,
-      donations: 0,
+      followers: n.followerCount || 0,
+      donations: donationsTotal,
       status: relatedUser?.isActive === false ? "Suspended" : "Active",
     };
   });
@@ -469,18 +482,24 @@ export default function AdminDashboard() {
                         </div>
 
                         <div className="mb-4 p-4 bg-neutral-50 rounded-lg">
-                          <p className="text-sm text-neutral-600 mb-2">Uploaded Documents:</p>
-                          <div className="space-y-2">
-                            {npo.documents.map((doc, index) => (
-                              <div key={index} className="flex items-center justify-between">
-                                <span className="text-sm">{doc}</span>
-                                <Button variant="outline" size="sm">
-                                  <Eye className="w-4 h-4 mr-2" />
-                                  View
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
+                          <p className="text-sm text-neutral-600 mb-2">Submitted Documents:</p>
+                          {npo.documents.length === 0 ? (
+                            <p className="text-sm text-neutral-500">No document links were provided with this request.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {npo.documents.map((doc, index) => (
+                                <div key={index} className="flex items-center justify-between">
+                                  <span className="text-sm">{doc.label}</span>
+                                  <Button variant="outline" size="sm" asChild>
+                                    <a href={doc.url} target="_blank" rel="noopener noreferrer">
+                                      <Eye className="w-4 h-4 mr-2" />
+                                      View
+                                    </a>
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex gap-3">

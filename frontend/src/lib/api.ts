@@ -106,7 +106,7 @@ export const authApi = {
 export const individualApi = {
   discoverNpos: () =>
     get<
-      { npoId: number; organizationName: string; focusArea: string | null; mission: string | null; location: string | null; isVerified: boolean }[]
+      { npoId: number; organizationName: string; focusArea: string | null; mission: string | null; location: string | null; isVerified: boolean; followerCount: number }[]
     >("/individual/discover-NPOs"),
   follow: (npoId: number) => post(`/individual/follow/${npoId}`),
   unfollow: (npoId: number) => del(`/individual/unfollow/${npoId}`),
@@ -115,15 +115,21 @@ export const individualApi = {
     post<{ message: string; applicationId: number }>(`/individual/volunteer/apply/${opportunityId}`, dto),
   getMyProfile: () => get("/individual/me"),
   updateMyProfile: (dto: Record<string, unknown>) => put("/individual/me", dto),
-  getMyDonations: () => get<{ totalDonated: number; count: number; donations: unknown[] }>("/individual/my-donations"),
+  getMyDonations: () =>
+    get<{ totalDonated: number; count: number; donations: { transactionId: number; amount: number; status: string; timestamp: string; receiverUserId: number; receiverNpoName: string | null }[] }>(
+      "/individual/my-donations"
+    ),
   getMyVolunteering: () => get<unknown[]>("/individual/my-volunteering"),
   getMyImpact: () =>
     get<{ totalDonated: number; totalHoursVolunteered: number; npoFollowing: number; volunteerRolesCompleted: number }>(
       "/individual/my-impact"
     ),
   getCommunityUpdates: () => get<unknown[]>("/individual/community-updates"),
-  donate: (npoId: number, amount: number) =>
-    post<{ message: string; transactionId: number; newBalance: number }>(`/individual/donate/${npoId}`, { amount }),
+  donate: (npoId: number, amount: number, fundingRequestId?: number) =>
+    post<{ message: string; transactionId: number; newBalance: number; fundingRequestRaisedAmount?: number }>(
+      `/individual/donate/${npoId}`,
+      { amount, fundingRequestId }
+    ),
   getVolunteerApplication: (applicationId: number) => get(`/individual/volunteer/application/${applicationId}`),
   cancelVolunteerApplication: (applicationId: number) => del(`/individual/volunteer/application/${applicationId}`),
   changePassword: (dto: { currentPassword: string; newPassword: string }) => put("/individual/change-password", dto),
@@ -132,13 +138,18 @@ export const individualApi = {
 
 // ── NPO ─────────────────────────────────────────────────────────────
 export const npoApi = {
-  getAll: () => get<{ npoId: number; userId: number; nporegNum: string; organizationName: string; npofocusArea: string | null; npomission: string | null }[]>(
-    "/npo"
-  ),
+  getAll: () =>
+    get<
+      { npoId: number; userId: number; nporegNum: string; organizationName: string; npofocusArea: string | null; npomission: string | null; location: string | null; followerCount: number }[]
+    >("/npo"),
   getById: (id: number) => get(`/npo/${id}`),
   getByUserId: (userId: number) => get(`/npo/user/${userId}`),
   getMyProfile: () => get("/npo/me"),
   updateMyProfile: (dto: Record<string, unknown>) => put("/npo/me", dto),
+  getMySupporters: () =>
+    get<{ userId: number; name: string; userType: string; followDate: string; totalContributed: number }[]>(
+      "/npo/me/supporters"
+    ),
 };
 
 // ── Business ────────────────────────────────────────────────────────
@@ -161,6 +172,80 @@ export const campaignApi = {
   create: (dto: Record<string, unknown>) => post("/campaigns", dto),
   update: (id: number, dto: Record<string, unknown>) => put(`/campaigns/${id}`, dto),
   remove: (id: number) => del(`/campaigns/${id}`),
+};
+
+// ── Funding Requests (NPO fundraising campaigns — goal/raised/deadline) ──
+// Backed by FundingRequestController, which exposes the existing
+// FundingRequest entity. This is the real backend model for what the
+// dashboards call "Campaigns" for NPOs — distinct from PartnershipCampaign
+// (Business-initiated CSR campaigns, see campaignApi below).
+export interface FundingRequestDto {
+  requestId: number;
+  npoId: number;
+  npoName?: string;
+  title: string;
+  purpose: string;
+  targetAmount: number;
+  raisedAmount: number;
+  budgetBreakdown: string | null;
+  images: string | null;
+  startDate: string;
+  endDate: string | null;
+}
+
+export const fundingRequestApi = {
+  getAll: () => get<FundingRequestDto[]>("/fundingrequests"),
+  getById: (id: number) => get<FundingRequestDto>(`/fundingrequests/${id}`),
+  getByNpo: (npoId: number) => get<FundingRequestDto[]>(`/fundingrequests/npo/${npoId}`),
+  create: (dto: Record<string, unknown>) => post("/fundingrequests", dto),
+  update: (id: number, dto: Record<string, unknown>) => put(`/fundingrequests/${id}`, dto),
+  remove: (id: number) => del(`/fundingrequests/${id}`),
+};
+
+// ── Projects (NPO "Projects & Initiatives") ──────────────────────────
+export interface ProjectDto {
+  projectId: number;
+  npoId: number;
+  projectName: string;
+  projectDesc: string | null;
+  projectStatus: string;
+  projectProgress: number;
+}
+
+export const projectApi = {
+  getByNpo: (npoId: number) => get<ProjectDto[]>(`/projects/npo/${npoId}`),
+  getMine: () => get<ProjectDto[]>("/projects/me"),
+  getById: (id: number) => get<ProjectDto>(`/projects/${id}`),
+  create: (dto: Record<string, unknown>) => post("/projects", dto),
+  update: (id: number, dto: Record<string, unknown>) => put(`/projects/${id}`, dto),
+  remove: (id: number) => del(`/projects/${id}`),
+};
+
+// ── Impact Tracking (NPO "Impact Tracking" metrics) ──────────────────
+export interface ImpactTrackDto {
+  impactId: number;
+  npoId: number;
+  impactMetric: string;
+  value: number;
+  period: string;
+  description: string | null;
+}
+
+export const impactTrackApi = {
+  getByNpo: (npoId: number) => get<ImpactTrackDto[]>(`/impacttracks/npo/${npoId}`),
+  getMine: () => get<ImpactTrackDto[]>("/impacttracks/me"),
+  create: (dto: Record<string, unknown>) => post<ImpactTrackDto>("/impacttracks", dto),
+  remove: (id: number) => del(`/impacttracks/${id}`),
+};
+
+// ── NPO Verification submission (document upload for Admin review) ──
+export const verificationApi = {
+  submit: (dto: { npoCertificate?: string; npoTaxCertificate?: string }) =>
+    post<{ message: string; verificationId: number; status: string }>("/verifications/submit", dto),
+  getMine: () =>
+    get<{ verificationId: number; status: string; submittedDate: string; reviewedDate: string | null }[]>(
+      "/verifications/me"
+    ),
 };
 
 export const campaignApplicationApi = {
@@ -233,7 +318,10 @@ export const reportApi = {
 
 // ── Admin ────────────────────────────────────────────────────────────
 export const adminApi = {
-  getUsers: () => get<{ userId: number; email: string; userType: string; isActive: boolean; isVerified: boolean }[]>("/admin/users"),
+  getUsers: () =>
+    get<{ userId: number; name: string; email: string; userType: string; isActive: boolean; isVerified: boolean; joinedDate: string }[]>(
+      "/admin/users"
+    ),
   getUser: (id: number) => get(`/admin/users/${id}`),
   activateUser: (id: number) => put(`/admin/users/${id}/activate`),
   deactivateUser: (id: number) => put(`/admin/users/${id}/deactivate`),

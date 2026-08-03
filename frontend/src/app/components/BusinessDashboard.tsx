@@ -117,7 +117,7 @@ export default function BusinessDashboard() {
             category: n.focusArea || "General",
             description: n.mission || "",
             verified: n.isVerified,
-            followers: 0,
+            followers: n.followerCount,
             impact: "",
             image:
               "https://images.unsplash.com/photo-1593113598332-cd288d649433?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&w=400",

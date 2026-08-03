@@ -23,6 +23,7 @@ public class NPOController : ControllerBase
     public async Task<IActionResult> GetAll()
     {
         var list = await _context.Npos
+            .Include(n => n.User)
             .Select(n => new
             {
                 npoId = n.NpoId,
@@ -30,7 +31,9 @@ public class NPOController : ControllerBase
                 nporegNum = n.NporegNum,
                 organizationName = n.OrganizationName,
                 npofocusArea = n.NpofocusArea,
-                npomission = n.Npomission
+                npomission = n.Npomission,
+                location = n.User.Location,
+                followerCount = _context.Follows.Count(f => f.NpoId == n.NpoId)
             })
             .ToListAsync();
         return Ok(list);
@@ -116,6 +119,55 @@ public class NPOController : ControllerBase
 
         await _context.SaveChangesAsync();
         return Ok(new { message = "NPO profile updated successfully." });
+    }
+
+    // Supporters — followers of this NPO plus their total donations to it.
+    // Fills the frontend's "Supporters & Donors" tab, which previously
+    // showed four fully hardcoded names/amounts and was documented as
+    // having no backend model. Follow + Transaction + Profile all already
+    // existed; they just weren't joined together anywhere.
+    [Authorize(Roles = "NPO")]
+    [HttpGet("me/supporters")]
+    public async Task<IActionResult> GetMySupporters()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var userId = int.Parse(userIdClaim!);
+
+        var npo = await _context.Npos.FirstOrDefaultAsync(n => n.UserId == userId);
+        if (npo == null) return NotFound("NPO profile not found.");
+
+        var followers = await _context.Follows
+            .Include(f => f.User).ThenInclude(u => u.Profile)
+            .Where(f => f.NpoId == npo.NpoId)
+            .Select(f => new
+            {
+                userId = f.UserId,
+                name = f.User.Profile != null ? f.User.Profile.ProfileName : f.User.UserEmail,
+                userType = f.User.UserType,
+                followDate = f.FollowDate
+            })
+            .ToListAsync();
+
+        var donationTotals = await _context.Transactions
+            .Where(t => t.ReceiverUserId == npo.UserId && t.TransactionType == "Donation" && t.Status == "Completed")
+            .GroupBy(t => t.SenderUserId)
+            .Select(g => new { senderUserId = g.Key, total = g.Sum(t => t.Amount) })
+            .ToListAsync();
+
+        var totalsBySender = donationTotals
+            .Where(d => d.senderUserId.HasValue)
+            .ToDictionary(d => d.senderUserId!.Value, d => d.total);
+
+        var supporters = followers.Select(f => new
+        {
+            userId = f.userId,
+            name = f.name,
+            userType = f.userType,
+            followDate = f.followDate,
+            totalContributed = totalsBySender.TryGetValue(f.userId, out var total) ? total : 0m
+        });
+
+        return Ok(supporters);
     }
 
     // NOTE: Delete endpoint removed. Deleting an NPO would cascade-delete

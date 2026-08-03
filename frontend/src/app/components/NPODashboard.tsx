@@ -12,8 +12,16 @@ import {
   transactionApi,
   campaignApi,
   campaignApplicationApi,
+  fundingRequestApi,
+  projectApi,
+  impactTrackApi,
+  verificationApi,
+  FundingRequestDto,
+  ProjectDto,
+  ImpactTrackDto,
   ApiError,
 } from "../../lib/api";
+
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Badge } from "./ui/badge";
@@ -67,12 +75,12 @@ export default function NPODashboard() {
   const [postCategoryFilter, setPostCategoryFilter] = useState("All");
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // NOTE: "Campaigns" here (fundraising goal/target/raised/deadline, created
-  // by the NPO itself) has NO backend model — the only "campaign" concept
-  // in this API is CampaignController, which is a Business-initiated CSR
-  // partnership campaign that NPOs *apply to*, a different feature
-  // entirely. This section is left as local mock state; wiring it up for
-  // real would need a new backend model + controller.
+  // "Campaigns" here (fundraising goal/target/raised/deadline, created by
+  // the NPO itself) — backed by FundingRequestController /
+  // FundingRequest, a real entity that already existed in the schema but
+  // had no controller until now. Distinct from CampaignController, which
+  // is a Business-initiated CSR partnership campaign that NPOs *apply to*
+  // (see the "Partnership Campaigns" tab above).
   const [showCreateCampaign, setShowCreateCampaign] = useState(false);
   const [showViewCampaign, setShowViewCampaign] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<number | null>(null);
@@ -83,20 +91,7 @@ export default function NPODashboard() {
     purpose: "",
     budget: ""
   });
-  const [myCampaigns, setMyCampaigns] = useState([
-    {
-      id: 1,
-      name: "Community Library Construction",
-      description: "Building a safe space for learning",
-      targetAmount: 100000,
-      raisedAmount: 45000,
-      contributors: 23,
-      daysRemaining: 45,
-      status: "active" as const,
-      purpose: "Build a modern library facility to serve 500+ community members",
-      budget: "Construction: R60,000 | Books & Resources: R25,000 | Furniture: R15,000"
-    }
-  ]);
+  const [myCampaigns, setMyCampaigns] = useState<FundingRequestDto[]>([]);
 
   // Own NPO profile — GET /api/npo/me
   const [npoProfile, setNpoProfile] = useState<any>(null);
@@ -109,8 +104,140 @@ export default function NPODashboard() {
       .catch(() => {});
   }, [user]);
 
+  const loadMyCampaigns = () => {
+    if (!npoProfile?.npoId) return;
+    fundingRequestApi.getByNpo(npoProfile.npoId).then(setMyCampaigns).catch(() => setMyCampaigns([]));
+  };
+
+  useEffect(() => {
+    loadMyCampaigns();
+  }, [npoProfile]);
+
+  // Projects & Initiatives — backed by ProjectController / Project, a real
+  // entity that already existed in the schema but had no controller. The
+  // "Projects & Initiatives" tab used to render four fully hardcoded cards
+  // with no create/edit affordance at all.
+  const [myProjects, setMyProjects] = useState<ProjectDto[]>([]);
+  const [showCreateProject, setShowCreateProject] = useState(false);
+  const [projectForm, setProjectForm] = useState({ projectName: "", projectDesc: "", projectStatus: "Planning", projectProgress: "0" });
+
+  const loadMyProjects = () => {
+    projectApi.getMine().then(setMyProjects).catch(() => setMyProjects([]));
+  };
+
+  useEffect(() => {
+    if (!npoProfile) return;
+    loadMyProjects();
+  }, [npoProfile]);
+
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setActionError(null);
+    try {
+      await projectApi.create({
+        projectName: projectForm.projectName,
+        projectDesc: projectForm.projectDesc,
+        projectStatus: projectForm.projectStatus,
+        projectProgress: Number(projectForm.projectProgress) || 0,
+      });
+      setProjectForm({ projectName: "", projectDesc: "", projectStatus: "Planning", projectProgress: "0" });
+      setShowCreateProject(false);
+      loadMyProjects();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Couldn't create project.");
+    }
+  };
+
+  const handleDeleteProject = async (id: number) => {
+    if (!confirm("Are you sure you want to delete this project?")) return;
+    try {
+      await projectApi.remove(id);
+      loadMyProjects();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Couldn't delete project.");
+    }
+  };
+
+  // Impact Tracking — backed by ImpactTrackController / ImpactTrack, same
+  // situation as Projects: a real entity with no controller. The "Record
+  // New Impact" form used to submit nowhere at all.
+  const [myImpactTracks, setMyImpactTracks] = useState<ImpactTrackDto[]>([]);
+  const [impactForm, setImpactForm] = useState({ impactMetric: "", value: "", period: "", description: "" });
+
+  const loadMyImpactTracks = () => {
+    impactTrackApi.getMine().then(setMyImpactTracks).catch(() => setMyImpactTracks([]));
+  };
+
+  useEffect(() => {
+    if (!npoProfile) return;
+    loadMyImpactTracks();
+  }, [npoProfile]);
+
+  const handleRecordImpact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setActionError(null);
+    try {
+      await impactTrackApi.create({
+        impactMetric: impactForm.impactMetric,
+        value: Number(impactForm.value) || 0,
+        period: impactForm.period,
+        description: impactForm.description || null,
+      });
+      setImpactForm({ impactMetric: "", value: "", period: "", description: "" });
+      loadMyImpactTracks();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Couldn't record impact.");
+    }
+  };
+
   const [npoProfileForm, setNpoProfileForm] = useState({ organizationName: "", focusArea: "", mission: "" });
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
+
+  // NPO verification submission — backed by VerificationController, which
+  // fills in the missing half of an already-existing feature: the
+  // Verification entity (with NPOCertificate/NPOTaxCertificate columns)
+  // and the Admin approve/reject endpoints existed, but nothing ever
+  // created a Verification row, so the Admin queue was structurally
+  // always empty. This lets an NPO actually submit one.
+  const [myVerifications, setMyVerifications] = useState<{ verificationId: number; status: string; submittedDate: string; reviewedDate: string | null }[]>([]);
+  const [verificationForm, setVerificationForm] = useState({ npoCertificate: "", npoTaxCertificate: "" });
+  const [verificationMessage, setVerificationMessage] = useState<string | null>(null);
+
+  const loadMyVerifications = () => {
+    verificationApi.getMine().then(setMyVerifications).catch(() => setMyVerifications([]));
+  };
+
+  useEffect(() => {
+    if (!npoProfile) return;
+    loadMyVerifications();
+  }, [npoProfile]);
+
+  const latestVerification = myVerifications[0];
+
+  // Supporters & Donors — GET /api/npo/me/supporters
+  const [mySupporters, setMySupporters] = useState<{ userId: number; name: string; userType: string; followDate: string; totalContributed: number }[]>([]);
+
+  useEffect(() => {
+    if (!npoProfile) return;
+    npoApi.getMySupporters().then(setMySupporters).catch(() => setMySupporters([]));
+  }, [npoProfile]);
+
+  const handleSubmitVerification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setActionError(null);
+    setVerificationMessage(null);
+    try {
+      await verificationApi.submit({
+        npoCertificate: verificationForm.npoCertificate || undefined,
+        npoTaxCertificate: verificationForm.npoTaxCertificate || undefined,
+      });
+      setVerificationMessage("Verification request submitted for review.");
+      setVerificationForm({ npoCertificate: "", npoTaxCertificate: "" });
+      loadMyVerifications();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "Couldn't submit verification request.");
+    }
+  };
 
   useEffect(() => {
     if (!npoProfile) return;
@@ -181,7 +308,7 @@ export default function NPODashboard() {
               category: n.focusArea || "General",
               description: n.mission || "",
               verified: n.isVerified,
-              followers: 0, // not tracked by the backend
+              followers: n.followerCount,
               impact: "",
             }))
         )
@@ -360,8 +487,8 @@ export default function NPODashboard() {
             return {
               id: t.transactionId,
               type: (t.transactionType || "donation").toLowerCase(),
-              from: t.senderUserId != null ? `User #${t.senderUserId}` : "Donor",
-              to: t.receiverUserId != null ? `User #${t.receiverUserId}` : "Bank Account",
+              from: t.senderName || "Donor",
+              to: t.receiverName || "Bank Account",
               amount: isOutgoing ? -t.amount : t.amount,
               date: t.timestamp,
               status: (t.status || "completed").toLowerCase(),
@@ -1032,6 +1159,74 @@ export default function NPODashboard() {
                   </form>
                 </Card>
 
+                <Card className="p-8 mt-8">
+                  <h3 className="mb-2">Account Verification</h3>
+                  <p className="text-sm text-neutral-600 mb-6">
+                    Submit your NPO registration and tax certificates for admin review. Once
+                    approved, your organization shows a verified badge across the platform.
+                  </p>
+
+                  {verificationMessage && (
+                    <div className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2 mb-4">
+                      {verificationMessage}
+                    </div>
+                  )}
+
+                  {npoProfile && myVerifications !== null && (
+                    <>
+                      {latestVerification ? (
+                        <div className="mb-6">
+                          <Badge
+                            className={
+                              latestVerification.status === "Approved"
+                                ? "bg-green-100 text-green-700"
+                                : latestVerification.status === "Rejected"
+                                ? "bg-red-100 text-red-700"
+                                : "bg-amber-100 text-amber-700"
+                            }
+                          >
+                            {latestVerification.status}
+                          </Badge>
+                          <p className="text-sm text-neutral-600 mt-2">
+                            Submitted {new Date(latestVerification.submittedDate).toLocaleDateString("en-ZA")}
+                          </p>
+                        </div>
+                      ) : null}
+
+                      {(!latestVerification || latestVerification.status === "Rejected") && (
+                        <form className="space-y-6" onSubmit={handleSubmitVerification}>
+                          <div>
+                            <Label htmlFor="npo-cert">NPO Registration Certificate (URL)</Label>
+                            {/* No file-upload pipeline exists in this API — same
+                                pattern as Post.MediaUrl / VolunteerApplication images —
+                                so this stores a link/reference rather than raw bytes. */}
+                            <Input
+                              id="npo-cert"
+                              placeholder="https://..."
+                              className="mt-2"
+                              value={verificationForm.npoCertificate}
+                              onChange={(e) => setVerificationForm({ ...verificationForm, npoCertificate: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="npo-tax-cert">Tax Exemption Certificate (URL)</Label>
+                            <Input
+                              id="npo-tax-cert"
+                              placeholder="https://..."
+                              className="mt-2"
+                              value={verificationForm.npoTaxCertificate}
+                              onChange={(e) => setVerificationForm({ ...verificationForm, npoTaxCertificate: e.target.value })}
+                            />
+                          </div>
+                          <Button type="submit" className="bg-orange-600 hover:bg-orange-700">
+                            Submit for Verification
+                          </Button>
+                        </form>
+                      )}
+                    </>
+                  )}
+                </Card>
+
                 <Card className="p-8 mt-8 bg-neutral-50">
                   <h3 className="mb-2">Change Password</h3>
                   <p className="text-sm text-neutral-600">
@@ -1054,163 +1249,199 @@ export default function NPODashboard() {
               </div>
             )}
 
-            {/* Projects Tab */}
+            {/* Projects Tab — real CRUD backed by ProjectController */}
             {activeTab === "projects" && (
               <div>
                 <div className="flex items-center justify-between mb-8">
                   <h1>Projects & Initiatives</h1>
-                  <Button className="bg-orange-600 hover:bg-orange-700">
+                  <Button className="bg-orange-600 hover:bg-orange-700" onClick={() => setShowCreateProject(!showCreateProject)}>
                     <Plus className="w-4 h-4 mr-2" />
                     Create Project
                   </Button>
                 </div>
 
-                <div className="grid md:grid-cols-2 gap-6">
-                  <Card className="p-6">
-                    <div className="flex items-start justify-between mb-4">
-                      <div>
-                        <h3 className="mb-1">Youth Mentorship Program</h3>
-                        <p className="text-sm text-neutral-600">Supporting 50 high school students</p>
-                      </div>
-                      <Badge className="bg-green-100 text-green-700">Active</Badge>
-                    </div>
-                    <div className="mb-4">
-                      <div className="flex items-center justify-between text-sm mb-2">
-                        <span className="text-neutral-600">Progress</span>
-                        <span>75%</span>
-                      </div>
-                      <div className="w-full bg-neutral-200 rounded-full h-2">
-                        <div className="bg-orange-600 h-2 rounded-full" style={{ width: "75%" }} />
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" className="flex-1">
-                        View Details
-                      </Button>
-                      <Button variant="outline" size="sm" className="flex-1">
-                        Post Update
-                      </Button>
-                    </div>
-                  </Card>
+                {actionError && (
+                  <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2 mb-6">
+                    {actionError}
+                  </div>
+                )}
 
-                  <Card className="p-6">
-                    <div className="flex items-start justify-between mb-4">
-                      <div>
-                        <h3 className="mb-1">Community Library</h3>
-                        <p className="text-sm text-neutral-600">Building a reading space for all ages</p>
+                {showCreateProject && (
+                  <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
+                    <Card className="p-8">
+                      <div className="flex items-center justify-between mb-6">
+                        <h3>Create Project</h3>
+                        <Button variant="ghost" size="sm" onClick={() => setShowCreateProject(false)}>
+                          <X className="w-4 h-4" />
+                        </Button>
                       </div>
-                      <Badge className="bg-blue-100 text-blue-700">Fundraising</Badge>
-                    </div>
-                    <div className="mb-4">
-                      <div className="flex items-center justify-between text-sm mb-2">
-                        <span className="text-neutral-600">Funding</span>
-                        <span>R 45,000 / R 100,000</span>
-                      </div>
-                      <div className="w-full bg-neutral-200 rounded-full h-2">
-                        <div className="bg-orange-600 h-2 rounded-full" style={{ width: "45%" }} />
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" className="flex-1">
-                        View Details
-                      </Button>
-                      <Button variant="outline" size="sm" className="flex-1">
-                        Post Update
-                      </Button>
-                    </div>
-                  </Card>
+                      <form className="space-y-6" onSubmit={handleCreateProject}>
+                        <div>
+                          <Label htmlFor="project-name">Project Name</Label>
+                          <Input
+                            id="project-name"
+                            className="mt-2"
+                            value={projectForm.projectName}
+                            onChange={(e) => setProjectForm({ ...projectForm, projectName: e.target.value })}
+                            required
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="project-desc">Description</Label>
+                          <Textarea
+                            id="project-desc"
+                            className="mt-2"
+                            rows={3}
+                            value={projectForm.projectDesc}
+                            onChange={(e) => setProjectForm({ ...projectForm, projectDesc: e.target.value })}
+                          />
+                        </div>
+                        <div className="grid md:grid-cols-2 gap-6">
+                          <div>
+                            <Label htmlFor="project-status">Status</Label>
+                            <select
+                              id="project-status"
+                              className="w-full mt-2 px-3 py-2 border border-neutral-300 rounded-md"
+                              value={projectForm.projectStatus}
+                              onChange={(e) => setProjectForm({ ...projectForm, projectStatus: e.target.value })}
+                            >
+                              <option value="Planning">Planning</option>
+                              <option value="Active">Active</option>
+                              <option value="Completed">Completed</option>
+                            </select>
+                          </div>
+                          <div>
+                            <Label htmlFor="project-progress">Progress (%)</Label>
+                            <Input
+                              id="project-progress"
+                              type="number"
+                              min="0"
+                              max="100"
+                              className="mt-2"
+                              value={projectForm.projectProgress}
+                              onChange={(e) => setProjectForm({ ...projectForm, projectProgress: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                        <Button type="submit" className="bg-orange-600 hover:bg-orange-700">
+                          Create Project
+                        </Button>
+                      </form>
+                    </Card>
+                  </motion.div>
+                )}
 
-                  <Card className="p-6">
-                    <div className="flex items-start justify-between mb-4">
-                      <div>
-                        <h3 className="mb-1">After-School Care</h3>
-                        <p className="text-sm text-neutral-600">Safe space for 30 children daily</p>
-                      </div>
-                      <Badge className="bg-green-100 text-green-700">Active</Badge>
-                    </div>
-                    <div className="mb-4">
-                      <div className="flex items-center justify-between text-sm mb-2">
-                        <span className="text-neutral-600">Progress</span>
-                        <span>60%</span>
-                      </div>
-                      <div className="w-full bg-neutral-200 rounded-full h-2">
-                        <div className="bg-orange-600 h-2 rounded-full" style={{ width: "60%" }} />
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" className="flex-1">
-                        View Details
-                      </Button>
-                      <Button variant="outline" size="sm" className="flex-1">
-                        Post Update
-                      </Button>
-                    </div>
+                {myProjects.length === 0 ? (
+                  <Card className="p-12 text-center">
+                    <FileText className="w-12 h-12 text-neutral-400 mx-auto mb-3" />
+                    <h3 className="mb-2">No projects yet</h3>
+                    <p className="text-neutral-600">Create your first project to showcase your organization's work</p>
                   </Card>
-
-                  <Card className="p-6">
-                    <div className="flex items-start justify-between mb-4">
-                      <div>
-                        <h3 className="mb-1">Sports Development</h3>
-                        <p className="text-sm text-neutral-600">Football training for youth</p>
-                      </div>
-                      <Badge className="bg-gray-100 text-gray-700">Completed</Badge>
-                    </div>
-                    <div className="mb-4">
-                      <div className="flex items-center justify-between text-sm mb-2">
-                        <span className="text-neutral-600">Progress</span>
-                        <span>100%</span>
-                      </div>
-                      <div className="w-full bg-neutral-200 rounded-full h-2">
-                        <div className="bg-green-600 h-2 rounded-full" style={{ width: "100%" }} />
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" className="flex-1">
-                        View Report
-                      </Button>
-                      <Button variant="outline" size="sm" className="flex-1">
-                        Archive
-                      </Button>
-                    </div>
-                  </Card>
-                </div>
+                ) : (
+                  <div className="grid md:grid-cols-2 gap-6">
+                    {myProjects.map((project) => (
+                      <Card key={project.projectId} className="p-6">
+                        <div className="flex items-start justify-between mb-4">
+                          <div>
+                            <h3 className="mb-1">{project.projectName}</h3>
+                            <p className="text-sm text-neutral-600">{project.projectDesc}</p>
+                          </div>
+                          <Badge
+                            className={
+                              project.projectStatus === "Active"
+                                ? "bg-green-100 text-green-700"
+                                : project.projectStatus === "Completed"
+                                ? "bg-gray-100 text-gray-700"
+                                : "bg-blue-100 text-blue-700"
+                            }
+                          >
+                            {project.projectStatus}
+                          </Badge>
+                        </div>
+                        <div className="mb-4">
+                          <div className="flex items-center justify-between text-sm mb-2">
+                            <span className="text-neutral-600">Progress</span>
+                            <span>{project.projectProgress}%</span>
+                          </div>
+                          <div className="w-full bg-neutral-200 rounded-full h-2">
+                            <div
+                              className={`h-2 rounded-full ${project.projectStatus === "Completed" ? "bg-green-600" : "bg-orange-600"}`}
+                              style={{ width: `${Math.min(project.projectProgress, 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="flex-1 text-red-600 hover:bg-red-50"
+                            onClick={() => handleDeleteProject(project.projectId)}
+                          >
+                            <Trash2 className="w-4 h-4 mr-2" />
+                            Delete
+                          </Button>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Impact Tracking Tab */}
+            {/* Impact Tracking Tab — real CRUD backed by ImpactTrackController */}
             {activeTab === "impact" && (
               <div>
                 <h1 className="mb-8">Impact Tracking</h1>
 
-                <div className="grid md:grid-cols-3 gap-6 mb-8">
-                  <Card className="p-6">
-                    <div className="text-neutral-600 text-sm mb-2">People Reached</div>
-                    <div className="text-4xl mb-1">1,247</div>
-                    <div className="text-sm text-green-600">+156 this quarter</div>
-                  </Card>
+                {actionError && (
+                  <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2 mb-6">
+                    {actionError}
+                  </div>
+                )}
 
-                  <Card className="p-6">
-                    <div className="text-neutral-600 text-sm mb-2">Students Mentored</div>
-                    <div className="text-4xl mb-1">340</div>
-                    <div className="text-sm text-green-600">+45 this quarter</div>
+                {myImpactTracks.length === 0 ? (
+                  <Card className="p-8 text-center mb-8">
+                    <p className="text-neutral-600">No impact recorded yet. Use the form below to add your first metric.</p>
                   </Card>
-
-                  <Card className="p-6">
-                    <div className="text-neutral-600 text-sm mb-2">Community Events</div>
-                    <div className="text-4xl mb-1">18</div>
-                    <div className="text-sm text-neutral-600">This year</div>
-                  </Card>
-                </div>
+                ) : (
+                  <div className="grid md:grid-cols-3 gap-6 mb-8">
+                    {myImpactTracks.map((impact) => (
+                      <Card key={impact.impactId} className="p-6">
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="text-neutral-600 text-sm mb-2">{impact.impactMetric}</div>
+                          <button
+                            onClick={async () => {
+                              try {
+                                await impactTrackApi.remove(impact.impactId);
+                                loadMyImpactTracks();
+                              } catch (err) {
+                                setActionError(err instanceof ApiError ? err.message : "Couldn't delete impact record.");
+                              }
+                            }}
+                          >
+                            <X className="w-4 h-4 text-neutral-400 hover:text-red-600" />
+                          </button>
+                        </div>
+                        <div className="text-4xl mb-1">{impact.value.toLocaleString()}</div>
+                        <div className="text-sm text-neutral-600">{impact.period}</div>
+                        {impact.description && <p className="text-sm text-neutral-600 mt-2">{impact.description}</p>}
+                      </Card>
+                    ))}
+                  </div>
+                )}
 
                 <Card className="p-8">
                   <h3 className="mb-6">Record New Impact</h3>
-                  <form className="space-y-6">
+                  <form className="space-y-6" onSubmit={handleRecordImpact}>
                     <div>
                       <Label htmlFor="metric">Impact Metric</Label>
                       <Input
                         id="metric"
                         placeholder="e.g., Students enrolled, Meals served, Books distributed"
                         className="mt-2"
+                        value={impactForm.impactMetric}
+                        onChange={(e) => setImpactForm({ ...impactForm, impactMetric: e.target.value })}
+                        required
                       />
                     </div>
 
@@ -1222,6 +1453,9 @@ export default function NPODashboard() {
                           type="number"
                           placeholder="e.g., 25"
                           className="mt-2"
+                          value={impactForm.value}
+                          onChange={(e) => setImpactForm({ ...impactForm, value: e.target.value })}
+                          required
                         />
                       </div>
                       <div>
@@ -1230,6 +1464,9 @@ export default function NPODashboard() {
                           id="period"
                           placeholder="e.g., March 2026, Q1 2026"
                           className="mt-2"
+                          value={impactForm.period}
+                          onChange={(e) => setImpactForm({ ...impactForm, period: e.target.value })}
+                          required
                         />
                       </div>
                     </div>
@@ -1241,10 +1478,12 @@ export default function NPODashboard() {
                         placeholder="Provide context about this impact..."
                         className="mt-2"
                         rows={4}
+                        value={impactForm.description}
+                        onChange={(e) => setImpactForm({ ...impactForm, description: e.target.value })}
                       />
                     </div>
 
-                    <Button className="bg-orange-600 hover:bg-orange-700">
+                    <Button type="submit" className="bg-orange-600 hover:bg-orange-700">
                       Record Impact
                     </Button>
                   </form>
@@ -1252,84 +1491,44 @@ export default function NPODashboard() {
               </div>
             )}
 
-            {/* Supporters Tab */}
+            {/* Supporters Tab — real data backed by NPOController.GetMySupporters,
+                joining Follow + Transaction + Profile (all pre-existing tables). */}
             {activeTab === "supporters" && (
               <div>
                 <h1 className="mb-8">Supporters & Donors</h1>
 
-                <div className="grid gap-4">
-                  <Card className="p-6">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center">
-                          <span className="text-lg">SM</span>
-                        </div>
-                        <div>
-                          <h3 className="mb-1">Sarah Mthembu</h3>
-                          <p className="text-sm text-neutral-600">Individual Donor • Following since Jan 2026</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-sm text-neutral-600 mb-1">Total Contributed</div>
-                        <div className="text-lg">R 2,500</div>
-                      </div>
-                    </div>
+                {mySupporters.length === 0 ? (
+                  <Card className="p-12 text-center">
+                    <Users className="w-12 h-12 text-neutral-400 mx-auto mb-3" />
+                    <h3 className="mb-2">No supporters yet</h3>
+                    <p className="text-neutral-600">Followers and donors will show up here once people start following your organization</p>
                   </Card>
-
-                  <Card className="p-6">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
-                          <span className="text-lg">TN</span>
+                ) : (
+                  <div className="grid gap-4">
+                    {mySupporters.map((supporter) => (
+                      <Card key={supporter.userId} className="p-6">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center">
+                              <span className="text-lg">{supporter.name.slice(0, 2).toUpperCase()}</span>
+                            </div>
+                            <div>
+                              <h3 className="mb-1">{supporter.name}</h3>
+                              <p className="text-sm text-neutral-600">
+                                {supporter.userType === "Business" ? "Business Partner" : "Individual Donor"} • Following since{" "}
+                                {new Date(supporter.followDate).toLocaleDateString("en-ZA", { year: "numeric", month: "short" })}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-sm text-neutral-600 mb-1">Total Contributed</div>
+                            <div className="text-lg">R {supporter.totalContributed.toLocaleString()}</div>
+                          </div>
                         </div>
-                        <div>
-                          <h3 className="mb-1">Thabo Ndlovu</h3>
-                          <p className="text-sm text-neutral-600">Monthly Supporter • Following since Nov 2025</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-sm text-neutral-600 mb-1">Total Contributed</div>
-                        <div className="text-lg">R 1,200</div>
-                      </div>
-                    </div>
-                  </Card>
-
-                  <Card className="p-6">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center">
-                          <span className="text-lg">TC</span>
-                        </div>
-                        <div>
-                          <h3 className="mb-1">TechCorp Solutions</h3>
-                          <p className="text-sm text-neutral-600">Business Partner • CSR Partnership since Oct 2025</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-sm text-neutral-600 mb-1">Total Contributed</div>
-                        <div className="text-lg">R 25,000</div>
-                      </div>
-                    </div>
-                  </Card>
-
-                  <Card className="p-6">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-full bg-purple-100 flex items-center justify-center">
-                          <span className="text-lg">LM</span>
-                        </div>
-                        <div>
-                          <h3 className="mb-1">Lindiwe Maseko</h3>
-                          <p className="text-sm text-neutral-600">Volunteer & Donor • Following since Feb 2026</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-sm text-neutral-600 mb-1">Total Contributed</div>
-                        <div className="text-lg">R 800</div>
-                      </div>
-                    </div>
-                  </Card>
-                </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1423,31 +1622,37 @@ export default function NPODashboard() {
                           <X className="w-4 h-4" />
                         </Button>
                       </div>
+                      {actionError && (
+                        <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2 mb-4">
+                          {actionError}
+                        </div>
+                      )}
                       <form
                         className="space-y-6"
-                        onSubmit={(e) => {
+                        onSubmit={async (e) => {
                           e.preventDefault();
-                          const newCampaign = {
-                            id: myCampaigns.length + 1,
-                            name: campaignFormData.name,
-                            description: campaignFormData.purpose.substring(0, 100) + "...",
-                            targetAmount: parseFloat(campaignFormData.targetAmount),
-                            raisedAmount: 0,
-                            contributors: 0,
-                            daysRemaining: Math.floor((new Date(campaignFormData.deadline).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)),
-                            status: "active" as const,
-                            purpose: campaignFormData.purpose,
-                            budget: campaignFormData.budget
-                          };
-                          setMyCampaigns([...myCampaigns, newCampaign]);
-                          setCampaignFormData({
-                            name: "",
-                            targetAmount: "",
-                            deadline: "",
-                            purpose: "",
-                            budget: ""
-                          });
-                          setShowCreateCampaign(false);
+                          setActionError(null);
+                          try {
+                            await fundingRequestApi.create({
+                              title: campaignFormData.name,
+                              purpose: campaignFormData.purpose,
+                              targetAmount: parseFloat(campaignFormData.targetAmount),
+                              budgetBreakdown: campaignFormData.budget,
+                              startDate: new Date().toISOString().slice(0, 10),
+                              endDate: campaignFormData.deadline || null,
+                            });
+                            loadMyCampaigns();
+                            setCampaignFormData({
+                              name: "",
+                              targetAmount: "",
+                              deadline: "",
+                              purpose: "",
+                              budget: ""
+                            });
+                            setShowCreateCampaign(false);
+                          } catch (err) {
+                            setActionError(err instanceof ApiError ? err.message : "Couldn't create funding request.");
+                          }
                         }}
                       >
                         <div>
@@ -1538,61 +1743,76 @@ export default function NPODashboard() {
                   </Card>
                 ) : (
                   <div className="space-y-6">
-                    {myCampaigns.map((campaign) => (
-                      <Card key={campaign.id} className="p-6">
-                        <div className="flex items-start justify-between mb-4">
-                          <div>
-                            <h3 className="mb-1">{campaign.name}</h3>
-                            <p className="text-sm text-neutral-600">{campaign.description}</p>
+                    {myCampaigns.map((campaign) => {
+                      const daysRemaining = campaign.endDate
+                        ? Math.ceil((new Date(campaign.endDate).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))
+                        : null;
+                      const percent = campaign.targetAmount > 0 ? Math.round((campaign.raisedAmount / campaign.targetAmount) * 100) : 0;
+                      return (
+                        <Card key={campaign.requestId} className="p-6">
+                          <div className="flex items-start justify-between mb-4">
+                            <div>
+                              <h3 className="mb-1">{campaign.title}</h3>
+                              <p className="text-sm text-neutral-600 line-clamp-2">{campaign.purpose}</p>
+                            </div>
+                            <Badge className={daysRemaining !== null && daysRemaining < 0 ? "bg-neutral-100 text-neutral-700" : "bg-green-100 text-green-700"}>
+                              {daysRemaining !== null && daysRemaining < 0 ? "Closed" : "Active"}
+                            </Badge>
                           </div>
-                          <Badge className="bg-green-100 text-green-700">
-                            {campaign.status.charAt(0).toUpperCase() + campaign.status.slice(1)}
-                          </Badge>
-                        </div>
-                        <div className="mb-4">
-                          <div className="flex items-center justify-between text-sm mb-2">
-                            <span className="text-neutral-600">Raised</span>
-                            <span>
-                              R {campaign.raisedAmount.toLocaleString()} of R {campaign.targetAmount.toLocaleString()} (
-                              {Math.round((campaign.raisedAmount / campaign.targetAmount) * 100)}%)
+                          <div className="mb-4">
+                            <div className="flex items-center justify-between text-sm mb-2">
+                              <span className="text-neutral-600">Raised</span>
+                              <span>
+                                R {campaign.raisedAmount.toLocaleString()} of R {campaign.targetAmount.toLocaleString()} ({percent}%)
+                              </span>
+                            </div>
+                            <div className="w-full bg-neutral-200 rounded-full h-2">
+                              <div
+                                className="bg-orange-600 h-2 rounded-full"
+                                style={{ width: `${Math.min(percent, 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between text-sm mb-4">
+                            {/* NOTE: FundingRequest doesn't track a contributor count —
+                                that would require joining donation transactions filtered
+                                by fundingRequestId, which the Transaction table doesn't
+                                currently store a link to. Omitted rather than faked. */}
+                            <span className="text-neutral-600">
+                              {daysRemaining !== null ? `${daysRemaining} days remaining` : "No deadline set"}
                             </span>
                           </div>
-                          <div className="w-full bg-neutral-200 rounded-full h-2">
-                            <div
-                              className="bg-orange-600 h-2 rounded-full"
-                              style={{ width: `${(campaign.raisedAmount / campaign.targetAmount) * 100}%` }}
-                            />
+                          <div className="flex gap-3">
+                            <Button
+                              variant="outline"
+                              className="flex-1"
+                              onClick={() => {
+                                setSelectedCampaign(campaign.requestId);
+                                setShowViewCampaign(true);
+                              }}
+                            >
+                              View Details
+                            </Button>
+                            <Button
+                              variant="outline"
+                              className="text-red-600 hover:bg-red-50"
+                              onClick={async () => {
+                                if (confirm(`Are you sure you want to delete "${campaign.title}"? This action cannot be undone.`)) {
+                                  try {
+                                    await fundingRequestApi.remove(campaign.requestId);
+                                    loadMyCampaigns();
+                                  } catch (err) {
+                                    setActionError(err instanceof ApiError ? err.message : "Couldn't delete campaign.");
+                                  }
+                                }
+                              }}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
                           </div>
-                        </div>
-                        <div className="flex items-center justify-between text-sm mb-4">
-                          <span className="text-neutral-600">{campaign.contributors} contributors</span>
-                          <span className="text-neutral-600">{campaign.daysRemaining} days remaining</span>
-                        </div>
-                        <div className="flex gap-3">
-                          <Button
-                            variant="outline"
-                            className="flex-1"
-                            onClick={() => {
-                              setSelectedCampaign(campaign.id);
-                              setShowViewCampaign(true);
-                            }}
-                          >
-                            View Details
-                          </Button>
-                          <Button
-                            variant="outline"
-                            className="text-red-600 hover:bg-red-50"
-                            onClick={() => {
-                              if (confirm(`Are you sure you want to delete "${campaign.name}"? This action cannot be undone.`)) {
-                                setMyCampaigns(myCampaigns.filter(c => c.id !== campaign.id));
-                              }
-                            }}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </Card>
-                    ))}
+                        </Card>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -2817,13 +3037,18 @@ export default function NPODashboard() {
             className="bg-white rounded-lg max-w-2xl w-full p-8 max-h-[90vh] overflow-y-auto"
           >
             {(() => {
-              const campaign = myCampaigns.find(c => c.id === selectedCampaign);
+              const campaign = myCampaigns.find(c => c.requestId === selectedCampaign);
               if (!campaign) return null;
+
+              const daysRemaining = campaign.endDate
+                ? Math.ceil((new Date(campaign.endDate).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))
+                : null;
+              const percent = campaign.targetAmount > 0 ? Math.round((campaign.raisedAmount / campaign.targetAmount) * 100) : 0;
 
               return (
                 <>
                   <div className="flex items-center justify-between mb-6">
-                    <h3>{campaign.name}</h3>
+                    <h3>{campaign.title}</h3>
                     <button onClick={() => { setShowViewCampaign(false); setSelectedCampaign(null); }}>
                       <X className="w-5 h-5" />
                     </button>
@@ -2831,10 +3056,9 @@ export default function NPODashboard() {
 
                   <div className="space-y-6">
                     <div>
-                      <Badge className="bg-green-100 text-green-700 mb-4">
-                        {campaign.status.charAt(0).toUpperCase() + campaign.status.slice(1)}
+                      <Badge className={daysRemaining !== null && daysRemaining < 0 ? "bg-neutral-100 text-neutral-700 mb-4" : "bg-green-100 text-green-700 mb-4"}>
+                        {daysRemaining !== null && daysRemaining < 0 ? "Closed" : "Active"}
                       </Badge>
-                      <p className="text-neutral-600">{campaign.description}</p>
                     </div>
 
                     <div className="bg-neutral-50 p-6 rounded-lg">
@@ -2850,24 +3074,18 @@ export default function NPODashboard() {
                           <div className="w-full bg-neutral-200 rounded-full h-3">
                             <div
                               className="bg-orange-600 h-3 rounded-full transition-all"
-                              style={{ width: `${(campaign.raisedAmount / campaign.targetAmount) * 100}%` }}
+                              style={{ width: `${Math.min(percent, 100)}%` }}
                             />
                           </div>
                         </div>
-                        <div className="grid grid-cols-3 gap-4 pt-2">
+                        <div className="grid grid-cols-2 gap-4 pt-2">
                           <div>
                             <div className="text-sm text-neutral-600">Progress</div>
-                            <div className="text-lg font-semibold text-orange-600">
-                              {Math.round((campaign.raisedAmount / campaign.targetAmount) * 100)}%
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-sm text-neutral-600">Contributors</div>
-                            <div className="text-lg font-semibold">{campaign.contributors}</div>
+                            <div className="text-lg font-semibold text-orange-600">{percent}%</div>
                           </div>
                           <div>
                             <div className="text-sm text-neutral-600">Days Left</div>
-                            <div className="text-lg font-semibold">{campaign.daysRemaining}</div>
+                            <div className="text-lg font-semibold">{daysRemaining !== null ? daysRemaining : "—"}</div>
                           </div>
                         </div>
                       </div>
@@ -2880,7 +3098,7 @@ export default function NPODashboard() {
 
                     <div>
                       <h4 className="mb-3">Budget Breakdown</h4>
-                      <p className="text-neutral-600 whitespace-pre-wrap">{campaign.budget}</p>
+                      <p className="text-neutral-600 whitespace-pre-wrap">{campaign.budgetBreakdown || "—"}</p>
                     </div>
 
                     <div className="flex gap-3 pt-4 border-t">
@@ -2893,11 +3111,16 @@ export default function NPODashboard() {
                       </Button>
                       <Button
                         className="flex-1 bg-red-600 hover:bg-red-700"
-                        onClick={() => {
-                          if (confirm(`Are you sure you want to delete "${campaign.name}"? This action cannot be undone.`)) {
-                            setMyCampaigns(myCampaigns.filter(c => c.id !== campaign.id));
-                            setShowViewCampaign(false);
-                            setSelectedCampaign(null);
+                        onClick={async () => {
+                          if (confirm(`Are you sure you want to delete "${campaign.title}"? This action cannot be undone.`)) {
+                            try {
+                              await fundingRequestApi.remove(campaign.requestId);
+                              loadMyCampaigns();
+                              setShowViewCampaign(false);
+                              setSelectedCampaign(null);
+                            } catch (err) {
+                              setActionError(err instanceof ApiError ? err.message : "Couldn't delete campaign.");
+                            }
                           }
                         }}
                       >

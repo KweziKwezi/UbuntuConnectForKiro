@@ -24,6 +24,10 @@ public class IndividualController : ControllerBase
     [HttpGet("discover-NPOs")]
     public async Task<IActionResult> DiscoverNpos()
     {
+        // followerCount was already computed for a single NPO in
+        // GetNpoProfile below via _context.Follows — just wasn't included
+        // here too, so every dashboard's NPO list showed "0 followers" as
+        // a hardcoded default rather than a missing backend field.
         var npos = await _context.Npos
             .Include(n => n.User)   // pulls in Users data (Location, IsVerified)
             .Select(n => new
@@ -33,7 +37,8 @@ public class IndividualController : ControllerBase
                 focusArea = n.NpofocusArea,
                 mission = n.Npomission,
                 location = n.User.Location,
-                isVerified = n.User.IsVerified
+                isVerified = n.User.IsVerified,
+                followerCount = _context.Follows.Count(f => f.NpoId == n.NpoId)
             })
             .ToListAsync();
 
@@ -218,7 +223,10 @@ public class IndividualController : ControllerBase
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var userId = int.Parse(userIdClaim!);
 
+        // receiverNpoName comes from the receiving user's Npo profile —
+        // resolves the frontend's "NPO (user #X)" placeholder to a real name.
         var donations = await _context.Transactions
+            .Include(t => t.ReceiverUser).ThenInclude(u => u!.Npos)
             .Where(t => t.SenderUserId == userId && t.TransactionType == "Donation")
             .OrderByDescending(t => t.Timestamp)
             .Select(t => new
@@ -227,7 +235,10 @@ public class IndividualController : ControllerBase
                 amount = t.Amount,
                 status = t.Status,
                 timestamp = t.Timestamp,
-                receiverUserId = t.ReceiverUserId
+                receiverUserId = t.ReceiverUserId,
+                receiverNpoName = t.ReceiverUser != null && t.ReceiverUser.Npos.Any()
+                    ? t.ReceiverUser.Npos.First().OrganizationName
+                    : null
             })
             .ToListAsync();
 
@@ -344,6 +355,17 @@ public class IndividualController : ControllerBase
         if (npo == null)
             return NotFound("NPO not found.");
 
+        FundingRequest? fundingRequest = null;
+        if (dto.FundingRequestId.HasValue)
+        {
+            fundingRequest = await _context.FundingRequests
+                .FirstOrDefaultAsync(f => f.RequestId == dto.FundingRequestId.Value);
+            if (fundingRequest == null)
+                return NotFound("Funding request not found.");
+            if (fundingRequest.NpoId != npo.NpoId)
+                return BadRequest("This funding request does not belong to the specified NPO.");
+        }
+
         var senderWallet = await _context.Wallets.FirstOrDefaultAsync(w => w.UserId == userId);
         if (senderWallet == null)
             return BadRequest("You do not have a wallet set up yet.");
@@ -376,6 +398,11 @@ public class IndividualController : ControllerBase
             senderWallet.Balance -= dto.Amount;
             receiverWallet.Balance += dto.Amount;
 
+            if (fundingRequest != null)
+            {
+                fundingRequest.RaisedAmount += dto.Amount;
+            }
+
             var transaction = new Transaction
             {
                 SenderUserId = userId,
@@ -394,7 +421,8 @@ public class IndividualController : ControllerBase
             {
                 message = "Donation successful.",
                 transactionId = transaction.TransactionId,
-                newBalance = senderWallet.Balance
+                newBalance = senderWallet.Balance,
+                fundingRequestRaisedAmount = fundingRequest?.RaisedAmount
             });
         }
         catch

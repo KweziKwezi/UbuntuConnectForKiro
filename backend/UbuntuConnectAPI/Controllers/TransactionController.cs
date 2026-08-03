@@ -19,6 +19,11 @@ public class TransactionController : ControllerBase
         _context = context;
     }
 
+    // senderName/receiverName come from Profile.ProfileName — every user
+    // gets a Profile row at registration (see AuthController), so this is
+    // just joining a table that was already sitting there unused. Fixes
+    // the frontend showing "Donor" / "Bank Account" placeholders instead
+    // of real names.
     [Authorize]
     [HttpGet("user/{userId}")]
     public async Task<IActionResult> GetByUser(int userId)
@@ -29,13 +34,17 @@ public class TransactionController : ControllerBase
         if (callerId != userId) return Forbid();
 
         var txs = await _context.Transactions
+            .Include(t => t.SenderUser).ThenInclude(u => u!.Profile)
+            .Include(t => t.ReceiverUser).ThenInclude(u => u!.Profile)
             .Where(t => t.SenderUserId == userId || t.ReceiverUserId == userId)
             .OrderByDescending(t => t.Timestamp)
             .Select(t => new
             {
                 transactionId = t.TransactionId,
                 senderUserId = t.SenderUserId,
+                senderName = t.SenderUser != null ? (t.SenderUser.Profile != null ? t.SenderUser.Profile.ProfileName : t.SenderUser.UserEmail) : null,
                 receiverUserId = t.ReceiverUserId,
+                receiverName = t.ReceiverUser != null ? (t.ReceiverUser.Profile != null ? t.ReceiverUser.Profile.ProfileName : t.ReceiverUser.UserEmail) : null,
                 amount = t.Amount,
                 transactionType = t.TransactionType,
                 status = t.Status,
@@ -53,7 +62,10 @@ public class TransactionController : ControllerBase
         var callerIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var callerId = int.Parse(callerIdClaim!);
 
-        var tx = await _context.Transactions.FindAsync(id);
+        var tx = await _context.Transactions
+            .Include(t => t.SenderUser).ThenInclude(u => u!.Profile)
+            .Include(t => t.ReceiverUser).ThenInclude(u => u!.Profile)
+            .FirstOrDefaultAsync(t => t.TransactionId == id);
         if (tx == null) return NotFound();
 
         if (tx.SenderUserId != callerId && tx.ReceiverUserId != callerId) return Forbid();
@@ -62,7 +74,9 @@ public class TransactionController : ControllerBase
         {
             transactionId = tx.TransactionId,
             senderUserId = tx.SenderUserId,
+            senderName = tx.SenderUser != null ? (tx.SenderUser.Profile != null ? tx.SenderUser.Profile.ProfileName : tx.SenderUser.UserEmail) : null,
             receiverUserId = tx.ReceiverUserId,
+            receiverName = tx.ReceiverUser != null ? (tx.ReceiverUser.Profile != null ? tx.ReceiverUser.Profile.ProfileName : tx.ReceiverUser.UserEmail) : null,
             amount = tx.Amount,
             transactionType = tx.TransactionType,
             status = tx.Status,
